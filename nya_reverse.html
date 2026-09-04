@@ -1,0 +1,451 @@
+import React, { useState, useEffect } from 'react';
+
+// --- 定数定義 ---
+const BOARD_SIZE = 8;
+const EMPTY = 0;
+const BLACK = 1; // 黒猫
+const WHITE = 2; // 白猫
+
+const DIRS = [
+  [-1, -1], [-1, 0], [-1, 1],
+  [ 0, -1],          [ 0, 1],
+  [ 1, -1], [ 1, 0], [ 1, 1]
+];
+
+// --- 初期盤面生成関数 ---
+const createInitialBoard = () => {
+  const newBoard = Array(BOARD_SIZE).fill(null).map(() => Array(BOARD_SIZE).fill(EMPTY));
+  // 中央に互い違いに配置
+  newBoard[3][3] = WHITE;
+  newBoard[4][4] = WHITE;
+  newBoard[3][4] = BLACK;
+  newBoard[4][3] = BLACK;
+  return newBoard;
+};
+
+// --- サウンド生成（Web Audio API） ---
+let audioCtx = null;
+
+const initAudio = () => {
+  if (!audioCtx) {
+    audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+  }
+  if (audioCtx.state === 'suspended') {
+    audioCtx.resume();
+  }
+};
+
+// ★ 効果音をリアルな「にゃー」に改良 ★
+const playMeow = () => {
+  try {
+    initAudio();
+    const now = audioCtx.currentTime;
+    const duration = 0.5; // 鳴き声の長さ
+
+    // 1. 基本となる声帯の音（ノコギリ波で倍音を多く含ませる）
+    const osc = audioCtx.createOscillator();
+    osc.type = 'sawtooth';
+
+    // 2. ピッチの変化（「ミャ」で一気に高く上がり、「〜オ」で下がる）
+    osc.frequency.setValueAtTime(400, now);
+    osc.frequency.exponentialRampToValueAtTime(800, now + 0.1);
+    osc.frequency.exponentialRampToValueAtTime(300, now + duration);
+
+    // 3. 口の形（声道・フォルマント）のシミュレート
+    const filter = audioCtx.createBiquadFilter();
+    filter.type = 'bandpass';
+    filter.Q.value = 5;
+    // 音の高さに合わせて共鳴部分を変化させることで動物の鳴き声っぽさを出す
+    filter.frequency.setValueAtTime(1200, now);
+    filter.frequency.linearRampToValueAtTime(2500, now + 0.1);
+    filter.frequency.linearRampToValueAtTime(800, now + duration);
+
+    // 4. 音量の変化（フワッと始まり、スッと消える）
+    const gain = audioCtx.createGain();
+    gain.gain.setValueAtTime(0, now);
+    gain.gain.linearRampToValueAtTime(0.6, now + 0.05);
+    gain.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+    // 接続して再生
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(audioCtx.destination);
+
+    osc.start(now);
+    osc.stop(now + duration);
+  } catch (e) {
+    console.error("Audio play failed:", e);
+  }
+};
+
+// 反転時の軽快な「ポッ」という音（リバーシのテンポ感を保つため変更なし）
+const playFlip = (delay = 0) => {
+  try {
+    initAudio();
+    const osc = audioCtx.createOscillator();
+    const gain = audioCtx.createGain();
+    osc.type = 'triangle';
+    osc.frequency.setValueAtTime(500, audioCtx.currentTime + delay);
+    osc.frequency.exponentialRampToValueAtTime(250, audioCtx.currentTime + delay + 0.15);
+    
+    gain.gain.setValueAtTime(0, audioCtx.currentTime + delay);
+    gain.gain.linearRampToValueAtTime(0.15, audioCtx.currentTime + delay + 0.05);
+    gain.gain.linearRampToValueAtTime(0, audioCtx.currentTime + delay + 0.15);
+    
+    osc.connect(gain);
+    gain.connect(audioCtx.destination);
+    osc.start(audioCtx.currentTime + delay);
+    osc.stop(audioCtx.currentTime + delay + 0.15);
+  } catch (e) {
+    console.error("Audio play failed:", e);
+  }
+};
+
+const playFanfare = () => {
+  try {
+    initAudio();
+    const notes = [523.25, 659.25, 783.99, 1046.50]; // C5, E5, G5, C6
+    notes.forEach((freq, i) => {
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.type = 'square';
+      osc.frequency.value = freq;
+      
+      const startTime = audioCtx.currentTime + i * 0.15;
+      const duration = i === notes.length - 1 ? 0.6 : 0.15;
+      
+      gain.gain.setValueAtTime(0, startTime);
+      gain.gain.linearRampToValueAtTime(0.1, startTime + 0.05);
+      gain.gain.linearRampToValueAtTime(0, startTime + duration);
+      
+      osc.connect(gain);
+      gain.connect(audioCtx.destination);
+      osc.start(startTime);
+      osc.stop(startTime + duration);
+    });
+  } catch (e) {
+    console.error("Audio play failed:", e);
+  }
+};
+
+// --- SVG コンポーネント ---
+const CatIcon = ({ color }) => {
+  const isBlack = color === 'black';
+  const fill = isBlack ? '#2d3748' : '#f7fafc';
+  const stroke = isBlack ? '#1a202c' : '#cbd5e0';
+  const eyeColor = isBlack ? '#fbbf24' : '#63b3ed'; 
+  const earInner = isBlack ? '#4a5568' : '#fed7e2';
+  
+  return (
+    <svg viewBox="0 0 100 100" className="w-full h-full drop-shadow-md">
+      {/* 右耳 */}
+      <polygon points="50,45 85,15 90,50" fill={fill} stroke={stroke} strokeWidth="2" strokeLinejoin="round"/>
+      <polygon points="60,40 80,25 82,45" fill={earInner} />
+      {/* 左耳 */}
+      <polygon points="50,45 15,15 10,50" fill={fill} stroke={stroke} strokeWidth="2" strokeLinejoin="round"/>
+      <polygon points="40,40 20,25 18,45" fill={earInner} />
+      {/* 顔輪郭 */}
+      <ellipse cx="50" cy="55" rx="42" ry="38" fill={fill} stroke={stroke} strokeWidth="2"/>
+      {/* 目 */}
+      <ellipse cx="32" cy="48" rx="7" ry="9" fill={eyeColor}/>
+      <ellipse cx="68" cy="48" rx="7" ry="9" fill={eyeColor}/>
+      {/* 瞳孔 */}
+      <ellipse cx="32" cy="48" rx="2" ry="6" fill="#000"/>
+      <ellipse cx="68" cy="48" rx="2" ry="6" fill="#000"/>
+      {/* 鼻 */}
+      <polygon points="47,60 53,60 50,64" fill="#fc8181" />
+      {/* 口 */}
+      <path d="M 43,68 Q 50,73 50,64 Q 50,73 57,68" fill="none" stroke={isBlack ? '#cbd5e0' : '#4a5568'} strokeWidth="2" strokeLinecap="round"/>
+      {/* ひげ */}
+      <line x1="8" y1="55" x2="22" y2="58" stroke={isBlack ? '#cbd5e0' : '#4a5568'} strokeWidth="1.5" strokeLinecap="round"/>
+      <line x1="6" y1="63" x2="20" y2="63" stroke={isBlack ? '#cbd5e0' : '#4a5568'} strokeWidth="1.5" strokeLinecap="round"/>
+      <line x1="92" y1="55" x2="78" y2="58" stroke={isBlack ? '#cbd5e0' : '#4a5568'} strokeWidth="1.5" strokeLinecap="round"/>
+      <line x1="94" y1="63" x2="80" y2="63" stroke={isBlack ? '#cbd5e0' : '#4a5568'} strokeWidth="1.5" strokeLinecap="round"/>
+    </svg>
+  );
+};
+
+const PawIcon = () => (
+  <svg viewBox="0 0 100 100" className="w-3/5 h-3/5 opacity-40">
+    <path d="M 30 75 C 30 55, 70 55, 70 75 C 70 95, 30 95, 30 75 Z" fill="#fff"/>
+    <circle cx="20" cy="45" r="12" fill="#fff"/>
+    <circle cx="40" cy="25" r="13" fill="#fff"/>
+    <circle cx="60" cy="25" r="13" fill="#fff"/>
+    <circle cx="80" cy="45" r="12" fill="#fff"/>
+  </svg>
+);
+
+const Piece = ({ type }) => {
+  const isWhite = type === WHITE;
+  
+  return (
+    <div className={`w-full h-full relative transition-all duration-300 ${type === EMPTY ? 'scale-0 opacity-0' : 'scale-100 opacity-100'}`} style={{ perspective: '800px' }}>
+      <div 
+        className="w-full h-full absolute transition-transform duration-500 ease-in-out"
+        style={{ 
+          transformStyle: 'preserve-3d', 
+          transform: isWhite ? 'rotateY(180deg)' : 'rotateY(0deg)' 
+        }}
+      >
+        <div className="w-full h-full absolute" style={{ backfaceVisibility: 'hidden' }}>
+          <CatIcon color="black" />
+        </div>
+        <div className="w-full h-full absolute" style={{ backfaceVisibility: 'hidden', transform: 'rotateY(180deg)' }}>
+          <CatIcon color="white" />
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// --- メインコンポーネント ---
+export default function App() {
+  const [board, setBoard] = useState(createInitialBoard);
+  const [currentPlayer, setCurrentPlayer] = useState(BLACK);
+  const [guideEnabled, setGuideEnabled] = useState(true);
+  const [hoveredMove, setHoveredMove] = useState(null);
+  const [gameOver, setGameOver] = useState(false);
+  const [message, setMessage] = useState('');
+  
+  const resetGame = () => {
+    setBoard(createInitialBoard());
+    setCurrentPlayer(BLACK);
+    setGameOver(false);
+    setMessage('');
+    setHoveredMove(null);
+  };
+
+  const getOpponent = (player) => (player === BLACK ? WHITE : BLACK);
+
+  const getFlippableCells = (currentBoard, player, r, c) => {
+    if (!currentBoard || !currentBoard[r] || currentBoard[r][c] !== EMPTY) return [];
+    
+    let flippable = [];
+    const opponent = getOpponent(player);
+    
+    for (let [dr, dc] of DIRS) {
+      let nr = r + dr;
+      let nc = c + dc;
+      let temp = [];
+      
+      while (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE && currentBoard[nr][nc] === opponent) {
+        temp.push({r: nr, c: nc});
+        nr += dr;
+        nc += dc;
+      }
+      
+      if (nr >= 0 && nr < BOARD_SIZE && nc >= 0 && nc < BOARD_SIZE && currentBoard[nr][nc] === player) {
+        flippable = flippable.concat(temp);
+      }
+    }
+    return flippable;
+  };
+
+  const getValidMoves = (currentBoard, player) => {
+    const moves = [];
+    for (let r = 0; r < BOARD_SIZE; r++) {
+      for (let c = 0; c < BOARD_SIZE; c++) {
+        const flippable = getFlippableCells(currentBoard, player, r, c);
+        if (flippable.length > 0) {
+          moves.push({ r, c, flippable });
+        }
+      }
+    }
+    return moves;
+  };
+
+  const countStones = (currentBoard, player) => {
+    return currentBoard.flat().filter(cell => cell === player).length;
+  };
+
+  useEffect(() => {
+    if (gameOver) return;
+    
+    const validMoves = getValidMoves(board, currentPlayer);
+    
+    if (validMoves.length === 0) {
+      const opponent = getOpponent(currentPlayer);
+      const opponentMoves = getValidMoves(board, opponent);
+      
+      if (opponentMoves.length === 0) {
+        setGameOver(true);
+        playFanfare();
+        const blackCount = countStones(board, BLACK);
+        const whiteCount = countStones(board, WHITE);
+        if (blackCount > whiteCount) setMessage('黒猫の勝利ニャ！');
+        else if (whiteCount > blackCount) setMessage('白猫の勝利ニャ！');
+        else setMessage('引き分けニャ！');
+      } else {
+        const playerName = currentPlayer === BLACK ? '黒猫' : '白猫';
+        setMessage(`${playerName}はパスニャ！`);
+        setTimeout(() => {
+          setMessage('');
+          setCurrentPlayer(opponent);
+        }, 2000);
+      }
+    }
+  }, [board, currentPlayer, gameOver]);
+
+  const handleCellClick = (r, c) => {
+    if (gameOver || message) return; 
+    
+    const flippable = getFlippableCells(board, currentPlayer, r, c);
+    if (flippable.length === 0) return;
+    
+    playMeow();
+    
+    const newBoard = board.map(row => [...row]);
+    newBoard[r][c] = currentPlayer;
+    
+    flippable.forEach((pos, i) => {
+      playFlip(i * 0.08);
+      newBoard[pos.r][pos.c] = currentPlayer;
+    });
+    
+    setBoard(newBoard);
+    setHoveredMove(null);
+    setCurrentPlayer(getOpponent(currentPlayer));
+  };
+
+  const handlePointerEnter = (r, c, isValid, flippable) => {
+    if (isValid && !gameOver && !message) {
+      setHoveredMove({ r, c, flippable });
+    }
+  };
+
+  const validMoves = getValidMoves(board, currentPlayer);
+
+  return (
+    <div 
+      className="min-h-screen bg-pink-50 flex flex-col items-center justify-center p-4 selection:bg-transparent"
+      style={{ fontFamily: "'M PLUS Rounded 1c', sans-serif", touchAction: 'manipulation' }}
+    >
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=M+PLUS+Rounded+1c:wght@400;700&display=swap');
+      `}</style>
+
+      <div className="w-full max-w-md relative">
+        
+        {message && !gameOver && (
+          <div className="absolute top-1/2 left-1/2 transform -translate-x-1/2 -translate-y-1/2 z-20 bg-black bg-opacity-70 text-white px-6 py-3 rounded-full font-bold shadow-lg pointer-events-none text-lg tracking-wider animate-pulse whitespace-nowrap">
+            {message}
+          </div>
+        )}
+
+        <div className="flex justify-between items-center w-full px-6 py-4 mb-4 bg-white rounded-2xl shadow-md border-b-4 border-gray-200">
+          <div className="relative flex flex-col items-center w-24">
+            {currentPlayer === BLACK && !gameOver && (
+              <div className="absolute -top-8 bg-pink-500 text-white text-xs font-bold px-3 py-1 rounded-full animate-bounce whitespace-nowrap shadow-sm">
+                手番ニャ!
+                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-pink-500 rotate-45"></div>
+              </div>
+            )}
+            <div className={`w-14 h-14 p-1 rounded-full transition-all ${currentPlayer === BLACK ? 'bg-pink-100 ring-2 ring-pink-400' : ''}`}>
+              <CatIcon color="black" />
+            </div>
+            <div className="text-3xl font-bold text-gray-800 mt-1">{countStones(board, BLACK)}</div>
+          </div>
+          
+          <div className="text-2xl font-bold text-gray-400">VS</div>
+          
+          <div className="relative flex flex-col items-center w-24">
+            {currentPlayer === WHITE && !gameOver && (
+              <div className="absolute -top-8 bg-pink-500 text-white text-xs font-bold px-3 py-1 rounded-full animate-bounce whitespace-nowrap shadow-sm">
+                手番ニャ!
+                <div className="absolute -bottom-1 left-1/2 transform -translate-x-1/2 w-2 h-2 bg-pink-500 rotate-45"></div>
+              </div>
+            )}
+            <div className={`w-14 h-14 p-1 rounded-full transition-all ${currentPlayer === WHITE ? 'bg-pink-100 ring-2 ring-pink-400' : ''}`}>
+              <CatIcon color="white" />
+            </div>
+            <div className="text-3xl font-bold text-gray-800 mt-1">{countStones(board, WHITE)}</div>
+          </div>
+        </div>
+
+        <div className="relative">
+          <div className="grid grid-cols-8 gap-1 p-2 bg-emerald-700 rounded-xl w-full aspect-square shadow-inner border-4 border-emerald-800">
+            {board.map((row, r) => (
+              row.map((cell, c) => {
+                const moveData = validMoves.find(m => m.r === r && m.c === c);
+                const isValid = !!moveData;
+                const isHovered = hoveredMove?.r === r && hoveredMove?.c === c;
+                const isFlippable = hoveredMove?.flippable.some(m => m.r === r && m.c === c);
+                
+                return (
+                  <div 
+                    key={`${r}-${c}`}
+                    className={`bg-emerald-500 rounded-sm relative flex justify-center items-center cursor-pointer overflow-hidden
+                      ${isHovered ? 'bg-emerald-400' : ''}
+                      ${isFlippable ? 'bg-emerald-400' : ''}
+                    `}
+                    onClick={() => handleCellClick(r, c)}
+                    onPointerEnter={() => handlePointerEnter(r, c, isValid, moveData?.flippable)}
+                    onPointerLeave={() => setHoveredMove(null)}
+                  >
+                    <div className="w-full h-full p-0.5 pointer-events-none">
+                      <Piece type={cell} />
+                    </div>
+                    
+                    {guideEnabled && cell === EMPTY && isValid && !isHovered && (
+                      <div className="absolute inset-0 flex justify-center items-center pointer-events-none">
+                        <PawIcon />
+                      </div>
+                    )}
+                    
+                    {isHovered && (
+                      <div className="absolute inset-0 border-2 border-yellow-300 pointer-events-none rounded-sm"></div>
+                    )}
+                    {isFlippable && (
+                      <div className="absolute inset-0 bg-yellow-300 bg-opacity-30 pointer-events-none"></div>
+                    )}
+                  </div>
+                );
+              })
+            ))}
+          </div>
+
+          {gameOver && (
+            <div className="absolute inset-0 z-10 flex items-center justify-center bg-black bg-opacity-60 rounded-xl backdrop-blur-sm transition-opacity">
+              <div className="bg-white p-6 rounded-2xl text-center shadow-2xl transform scale-100 w-11/12 border-4 border-pink-200">
+                <h2 className="text-2xl font-bold text-gray-800 mb-6">{message}</h2>
+                <div className="flex justify-center gap-8 mb-8">
+                  <div className="flex flex-col items-center">
+                    <div className="w-16 h-16 mb-2"><CatIcon color="black"/></div>
+                    <p className="font-bold text-2xl text-gray-800">{countStones(board, BLACK)}</p>
+                  </div>
+                  <div className="flex flex-col items-center">
+                    <div className="w-16 h-16 mb-2"><CatIcon color="white"/></div>
+                    <p className="font-bold text-2xl text-gray-800">{countStones(board, WHITE)}</p>
+                  </div>
+                </div>
+                <button 
+                  onClick={resetGame}
+                  className="px-6 py-3 bg-pink-500 text-white rounded-full font-bold shadow-md active:scale-95 text-lg w-full transition-transform"
+                >
+                  もう一度遊ぶニャ！
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex justify-between items-center w-full mt-6 px-2">
+          <button 
+            onClick={() => { initAudio(); resetGame(); }}
+            className="flex items-center gap-2 px-5 py-2.5 bg-gray-500 text-white rounded-full font-bold shadow-md active:scale-95 transition-transform"
+          >
+            やり直す
+          </button>
+          
+          <button 
+            onClick={() => { initAudio(); setGuideEnabled(!guideEnabled); }}
+            className={`flex items-center gap-2 px-5 py-2.5 text-white rounded-full font-bold shadow-md active:scale-95 transition-all ${guideEnabled ? 'bg-pink-500' : 'bg-pink-300'}`}
+          >
+            肉球ガイド: {guideEnabled ? 'ON' : 'OFF'}
+          </button>
+        </div>
+
+      </div>
+    </div>
+  );
+}
